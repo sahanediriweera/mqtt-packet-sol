@@ -94,6 +94,7 @@ static size_t unpack_mqtt_publish(const unsigned char *buf, union mqtt_header *h
 
   size_t len = mqtt_decode_length(&buf);
 
+  uint16_t topic_len = unpack_u16((const uint8_t **)&buf);
   pkt->publish.topiclen = unpack_string16(&buf, &pkt->publish.topic);
   uint16_t message_len = len;
 
@@ -102,10 +103,10 @@ static size_t unpack_mqtt_publish(const unsigned char *buf, union mqtt_header *h
     message_len -= sizeof(uint16_t);
   }
 
-  message_len -= (sizeof(uint16_t)+topiclen);
+  message_len -= (sizeof(uint16_t)+topic_len);
 
-  pkt->publish.payloadlen = message_len;
-  pkt->publish.payload = malloc(message_len + 1);
+  pkt->publish.payloadlen = &message_len;
+  pkt->publish.payload = (unsigned char *) malloc(message_len + 1);
   unpack_bytes((const uint8_t **)&buf,message_len, pkt->publish.payload);
   return len;
 }
