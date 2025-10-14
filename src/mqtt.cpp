@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,4 +110,93 @@ static size_t unpack_mqtt_publish(const unsigned char *buf, union mqtt_header *h
   pkt->publish.payload = (unsigned char *) malloc(message_len + 1);
   unpack_bytes((const uint8_t **)&buf,message_len, pkt->publish.payload);
   return len;
+}
+
+static size_t unpack_mqtt_subscribe(const unsigned char *buf,union mqtt_header *hdr,union mqtt_packet *pkt){
+  struct mqtt_subscribe subscribe = {.header = *hdr};
+
+  size_t len = mqtt_decode_length(&buf);
+
+  size_t remaining_bytes = len;
+
+  subscribe.pkt_id = unpack_u16(&buf);
+  remaining_bytes -= (sizeof(uint16_t));
+
+  int i =0;
+  while(remaining_bytes > 0){
+    remaining_bytes -= sizeof(uint16_t);
+    subscribe.tuples = (typeof(subscribe.tuples)) realloc(subscribe.tuples, (i+1)*sizeof(*subscribe.tuples));
+    subscribe.tuples[i].topic_len = unpack_string16(&buf,&subscribe.tuples[i].topic);
+    remaining_bytes -= subscribe.tuples[i].topic_len;
+    subscribe.tuples[i].qos = unpack_u8((const uint8_t **)&buf);
+    len -= sizeof(uint8_t);
+    i++;
+  }
+
+  subscribe.tuples_len = i;
+  pkt->subscribe = subscribe;
+  return len;
+}
+
+static size_t unpack_mqtt_unsubscribe(const unsigned char *buf,union mqtt_header *hdr,union mqtt_packet *pkt){
+  struct mqtt_unsubscribe unsubscribe = {.header = *hdr};
+  size_t len = mqtt_decode_length(&buf);
+  size_t remaining_bytes = len;
+
+  unsubscribe.pkt_id = unpack_u16((const uint8_t **)&buf);
+  remaining_bytes -= sizeof(uint16_t);
+
+  int i = 0;
+  while(remaining_bytes > 0){
+    remaining_bytes -= sizeof(uint16_t);
+
+    unsubscribe.tuples = (typeof(unsubscribe.tuples)) realloc(unsubscribe.tuples,(i+1)*sizeof(*unsubscribe.tuples));
+
+    remaining_bytes -= unsubscribe.tuples[i].topic_len;
+    i++;
+  }
+  unsubscribe.tuples_len = i;
+  pkt->unsubscribe = unsubscribe;
+  return len;
+}
+
+static size_t unpack_mqtt_ack(const unsigned char *buf,union mqtt_header *hdr,union mqtt_packet *pkt){
+  struct mqtt_ack ack = {.header = *hdr};
+
+  size_t len = mqtt_decode_length(&buf);
+
+  ack.pkt_id = unpack_u16((const uint8_t **)&buf);
+  pkt->ack = ack;
+  return len;
+}
+
+typedef size_t mqtt_unpack_handler(const unsigned char *,union mqtt_header *hdr,union mqtt_packet *pkt);
+
+static mqtt_unpack_handler *unpack_handlers[11] = {
+  NULL,
+  unpack_mqtt_connect,
+  NULL,
+  unpack_mqtt_publish,
+  unpack_mqtt_ack,
+  unpack_mqtt_ack,
+  unpack_mqtt_ack,
+  unpack_mqtt_ack,
+  unpack_mqtt_subscribe,
+  NULL,
+  unpack_mqtt_unsubscribe
+};
+
+int unpack_mqtt_packet(const unsigned char *buf,union mqtt_packet *pkt){
+  int rc = 0;
+  unsigned char type = *buf;
+  union mqtt_header header = {
+    .byte = type
+  };
+
+  if(header.bits.type == DISCONNECT || header.bits.type == PINGREQ || header.bits.type == PINGRESP){
+    pkt->header = header;
+  }else{
+    rc = unpack_handlers[header.bits.type](++buf,&header,pkt);
+  }
+  return rc;
 }
