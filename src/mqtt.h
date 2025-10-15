@@ -119,7 +119,7 @@ struct mqtt_publish {
     unsigned short pkt_id;
     unsigned short topiclen;
     unsigned char *topic;
-    unsigned short *payloadlen;
+    unsigned short payloadlen;
     unsigned char *payload;
 };
 
@@ -157,7 +157,7 @@ union mqtt_header *mqtt_packet_header(unsigned char);
 struct mqtt_ack *mqtt_packet_ack(unsigned char, unsigned short);
 struct mqtt_connack *mqtt_connack(unsigned char,unsigned char,unsigned char);
 struct mqtt_suback *mqtt_packet_suback(unsigned char,unsigned char,unsigned char*,unsigned short);
-struct mqtt_publish *mqtt_packet_publish(unsigned char,unsigned short,size_t,unsigned char*,size_t,unsigned char);
+struct mqtt_publish *mqtt_packet_publish(unsigned char,unsigned short,size_t,unsigned char*,size_t,unsigned char *);
 void mqtt_packet_release(union mqtt_packet*, unsigned);
 
 #endif // !DEBUG

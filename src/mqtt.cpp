@@ -106,7 +106,7 @@ static size_t unpack_mqtt_publish(const unsigned char *buf, union mqtt_header *h
 
   message_len -= (sizeof(uint16_t)+topic_len);
 
-  pkt->publish.payloadlen = &message_len;
+  pkt->publish.payloadlen = message_len;
   pkt->publish.payload = (unsigned char *) malloc(message_len + 1);
   unpack_bytes((const uint8_t **)&buf,message_len, pkt->publish.payload);
   return len;
@@ -240,7 +240,7 @@ struct mqtt_suback *mqtt_packet_suback(unsigned char byte,unsigned short pkt_id,
 }
 
 struct mqtt_publish *mqtt_packet_publish(unsigned char byte,unsigned short pkt_id,size_t topiclen,unsigned char *topic,size_t payloadlen,unsigned char *payload){
-  struct mqtt_publish *publish = malloc(sizeof(*publish));
+  struct mqtt_publish *publish = (mqtt_publish*) malloc(sizeof(*publish));
   publish->header.byte = byte;
   publish->pkt_id = pkt_id;
   publish->topiclen = topiclen;
@@ -267,7 +267,7 @@ void mqtt_packet_release(union mqtt_packet *pkt,unsigned type){
       break;
     case SUBSCRIBE:
     case UNSUBSCRIBE:
-      for(unsigned i =0 ;i < pkt->subscribe.tuples_len;i++)}{
+      for(unsigned i =0 ;i < pkt->subscribe.tuples_len;i++){
         free(pkt->subscribe.tuples[i].topic);
       }
       free(pkt->subscribe.tuples);
