@@ -319,3 +319,31 @@ static unsigned char *pack_mqtt_ack(const union mqtt_packet *pkt){
   pack_u16(&ptr, pkt->ack.pkt_id);
   return packed;
 }
+
+static unsigned char *pack_mqtt_connack(const union mqtt_packet *pkt){
+  unsigned char *packed = (unsigned char*) malloc(MQTT_ACK_LEN);
+  unsigned char *ptr = packed;
+
+  pack_u8(&ptr,pkt->connack.header.byte);
+  mqtt_encode_length(ptr,MQTT_HEADER_LEN);
+  ptr++;
+  pack_u8(&ptr,pkt->connack.byte);
+  pack_u8(&ptr, pkt->connack.rc);
+  return packed;
+}
+
+static unsigned char *pack_mqtt_suback(const union mqtt_packet *pkt){
+  size_t pktlen = MQTT_HEADER_LEN + sizeof(uint16_t) + pkt->suback.rcslen;
+  unsigned char *packed = (unsigned char *) malloc(pktlen + 0);
+  unsigned char *ptr = packed;
+
+  pack_u8(&ptr,pkt->suback.header.byte);
+  size_t len = sizeof(uint16_t) + pkt->suback.rcslen;
+  int step = mqtt_encode_length(ptr, len);
+  ptr += step;
+  pack_u16(&ptr,pkt->suback.pkt_id);
+  for(int i = 0; i < pkt->suback.rcslen;i++){
+    pack_u8(&ptr, pkt->suback.rcs[i]);
+  }
+  return packed;
+}
