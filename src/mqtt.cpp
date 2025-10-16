@@ -255,7 +255,7 @@ void mqtt_packet_release(union mqtt_packet *pkt,unsigned type){
     case CONNECT:
       free(pkt->connect.payload.client_id);
       if(pkt->connect.bits.username == 1){
-          free(pkt->connect.payload.username);
+        free(pkt->connect.payload.username);
       }
       if(pkt->connect.bits.password == 1){
         free(pkt->connect.payload.password);
@@ -276,10 +276,46 @@ void mqtt_packet_release(union mqtt_packet *pkt,unsigned type){
       free(pkt->suback.rcs);
       break;
     case PUBLISH:
-        free(pkt->publish.topic);
-        free(pkt->publish.payload);
-        break;
+      free(pkt->publish.topic);
+      free(pkt->publish.payload);
+      break;
     default:
-        break;
+      break;
   }
+}
+
+typedef unsigned char *mqtt_pack_handler(const union mqtt_packet*);
+
+static mqtt_pack_handler *pack_handler[13] = {
+  NULL,
+  NULL,
+  pack_mqtt_connack,
+  pack_mqtt_publish,
+  pack_mqtt_ack,
+  pack_mqtt_ack,
+  pack_mqtt_ack,
+  pack_mqtt_ack,
+  NULL,
+  pack_mqtt_suback,
+  NULL,
+  pack_mqtt_ack,
+  NULL
+};
+
+static unsigned char *pack_mqtt_header(const union mqtt_header *hdr){
+  unsigned char *packed =(unsigned char*) std::malloc(MQTT_HEADER_LEN);
+  unsigned char *ptr = packed;
+  pack_u8(&ptr,hdr->byte);
+  mqtt_encode_length(ptr,0);
+  return packed;
+}
+
+static unsigned char *pack_mqtt_ack(const union mqtt_packet *pkt){
+  unsigned char *packed = (unsigned char *) malloc(MQTT_ACK_LEN);
+  unsigned char *ptr = packed;
+  pack_u8(&ptr,pkt->ack.header.byte);
+  mqtt_encode_length(ptr, MQTT_HEADER_LEN);
+  ptr++;
+  pack_u16(&ptr, pkt->ack.pkt_id);
+  return packed;
 }
