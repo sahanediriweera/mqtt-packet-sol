@@ -1,8 +1,16 @@
 #include "network.h"
+#include "pack.h"
+#include "util.h"
+#include <ctime>
+#define _POSIX_C_SOURCE 200809L
 #include <cstddef>
 #include <cstdlib>
 #include <sys/socket.h>
-#define _POSIX_C_SOURCE 200809L
+#include "server.h"
+#include "mqtt.h"
+#include <netinet/in.h>
+#include <string.h>
+#include <arpa/inet.h>
 
 static const double SOL_SECONDS = 88775.24;
 
@@ -42,7 +50,7 @@ static handler *handlers[15] = {
 };
 
 
-struct connecction {
+struct connection {
     char ip[INET_ADDRSTRLEN + 1];
     int fd;
 };
@@ -67,7 +75,7 @@ static int accept_new_client(int fd, struct connection *conn){
 
     if(getpeername(clientsock, (struct sockaddr *)&addr, &addrlen) < 0) return -1;
 
-    char ip_buff[INET_ADDSTRLEN + 1];
+    char ip_buff[INET_ADDRSTRLEN + 1];
 
     if(inet_ntop(AF_INET, &addr.sin_addr, ip_buff,sizeof(ip_buff)) == NULL) return -1;
 
@@ -85,13 +93,221 @@ static int accept_new_client(int fd, struct connection *conn){
 }
 
 static void on_accept(struct evloop *loop, void *arg){
-    struct closure *server = arg;
+    struct closure *server = (closure *) arg;
 
     struct connection conn;
 
     accept_new_client(server->fd, &conn);
 
-    struct closure *client_closure = malloc(sizeof(*client_closure));
+    struct closure *client_closure = (closure *) malloc(sizeof(*client_closure));
 
     if(!client_closure) return;
 }
+
+static ssize_t recv_packet(int clientfd,unsigned char *buf,char *command){
+    ssize_t nbytes = 0;
+
+    if((nbytes = recv_bytes(clientfd,buf,1))<=0){
+        return -ERRCLIENTDC;
+
+        unsigned char byte = *buf;
+        buf++;
+        if(DISCONNECT < byte || CONNECT > byte){
+            return -ERRPACKETERR;
+        }
+
+        unsigned char buff[4];
+
+        int count = 0;
+        int n = 0;
+
+        do {
+            if((n = recv_bytes(clientfd,buf+count,1))<=0){
+                return -ERRCLIENTDC;
+            }
+
+            buff[count] = buf[count];
+            nbytes += n;
+        } while(buff[count++] & (1<<7));
+
+        const unsigned char *pbuf = &buff[0];
+        unsigned long long tlen = mqtt_decode_length(&pbuf);
+
+        if(tlen > conf->max_request_size){
+            nbytes = -ERRMAXREQSIZE;
+            goto exit;
+        }
+
+        if((n=recv(clientfd,buf+1,tlen))<0){
+            goto err;
+        }
+
+        nbytes += n;
+        *command = byte;
+exit:
+        return nbytes;
+err:
+        shutdown(clientfd);
+        close(clientfd);
+        return nbytes;
+    }
+}
+
+static void on_read(struct evloop *loop,void *arg){
+    struct closure *cb = arg;
+
+    unsigned char *buffer = malloc(conf->max_request_size);
+
+    if(!buffer){
+        sol_error("Out of memory");
+        goto errdc;
+    }
+
+    ssize_t bytes = 0;
+    char command = 0;
+
+    bytes = recv_packet(cb->fd,buffer,&command);
+
+    if(bytes == -ERRCLIENTDC || bytes == -ERRMAXREQSIZE) {
+        goto exit;
+    }
+
+    if(bytes == -ERRPACKETERR) goto errdc;
+
+    info.bytes_recv++;
+
+    union mqtt_packet packet;
+    unpack_mqtt_packet(buffer,&packet);
+    union mqtt_header hdr = {.byte = (unsigned char)(command)};
+
+    int rc = handlers[hdr.bits.type](cb,&packet);
+
+    if(rc == REARM_W){
+        cb->call = on_write;
+
+        evloop_rearm_callback_write(loop, cb);
+    }else if(rc == REARM_R){
+        cb->call = on_read;
+        evloop_rearm_callback_read(loop,cb);
+    }
+
+exit:
+    free(buffer);
+    return;
+errdc:
+    free(buffer);
+    sol_error("Dropping client");
+    shutdown(cb->fd,0);
+    close(cb->fd);
+    hashtable_del(sol.clients,((struct sol_client *)cb->obj)->client_id);
+    hashtable_del(sol.closures,cb->closure_id);
+    info.nclients--;
+    info.nconnections--;
+    return;
+}
+
+static void on_write(struct evloop *loop,void *arg){
+    struct closure *cb = arg;
+    ssize_t sent;
+
+    if((sent = send_bytes(cb->fd,cb->payload->data,cb->payload->size))<0){
+        sol_error("Error writing on socket client %s: %s",((struct sol_client*)cb->obj)->client_id,strerror(errono));
+    }
+
+
+    info.bytes_sent += sent;
+    bytestring_release(cb->payload);
+    cb->payload = NULL;
+
+    cb->call = on_read;
+
+    evloop_rearm_callback_read(loop,cb);
+}
+
+#define SYS_TOPIC 14
+
+static const char *sys_topic[SYS_TOPIC] = {
+    "$SOL",
+    "$SOL/broker/clients/",
+    "$SOL/broker/bytes/",
+    "$SOL/broker/messages/",
+    "$SOL/broker/uptime/",
+    "$SOL/broker/uptime/sol",
+    "$SOL/broker/clients/connected/",
+    "$SOL/broker/clients/disconnected/",
+    "$SOL/broker/bytes/sent/",
+    "$SOL/broker/bytes/received/",
+    "$SOL/broker/messages/sent/",
+    "$SOL/broker/messages/received/",
+    "$SOL/broker/memory/used"
+};
+
+static void run(struct evloop *loop){
+    if(evloop_wait(loop)<0){
+        sol_error("Event loop exited unexpectedly :%s", strerror(loop->status));
+        evloop_free(loop);
+    }
+}
+
+static int client_destructor(struct hastable_entry *entry){
+    if(!entry) return -1;
+
+    struct sol_client *client = entry->val;
+
+    if(client->client_id) free(ient->client_id);
+    free(client);
+    return 0;
+}
+
+static int closure_destructor(struct hashtable_entry *entry){
+    if(!entry) return -1;
+
+    struct closure *closure = entry->val;
+    if(closure->payload) bytestring_release(closure->payload);
+    free(closure);
+    return 0;
+}
+
+int start_server(const char *addr,const char *port){
+    trie_init(&sol.topics);
+    sol.clients = hashtable_create(client_destructor);
+    sol.closures = hashtable_create(closure_destructor);
+
+    struct closure server_closure;
+
+    server_closure.fd = make_listen(addr,port,conf->socket_family);
+    server_closure.payload = NULL;
+    server_closure.args = &server_closure;
+    server_closure.call = on_accept;
+    generate_uuid(server_closure.closure_id);
+
+    for(int i = 0;i < SYS_TOPIC;i++){
+        sol_topic_put(&sol,topic_create(strdup(sys_topic[i])));
+    }
+
+    struct evloop *event_loop = evloop_create(EPOLL_MAX_EVENTS,EPOLL_TIMEOUT);
+
+    evloop_add_callback(event_loop,&server_closure);
+
+    struct closure sys_closure = {
+        .fd = 0,
+        .payload = NULL,
+        .args = &sys_closure,
+        .call = publish_stats
+    };
+
+    generate_uuid(sys_closure.closure_id);
+
+    evloop_add_periodic_task(event_loop,conf->stats_pub_interval,0,&sys_closure);
+
+    sol_info("Server start");
+    info.start_time = time(NULL);
+    run(event_loop);
+    hastable_release(sol.clients);
+    hastable_release(sol.closures);
+
+    sol_info("Sol v%s exiting",VERSION);
+    return 0;
+}
+
+

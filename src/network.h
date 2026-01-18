@@ -10,6 +10,8 @@
 #define UNIX 0
 #define INET 1
 
+#define UUID_LEN 1 //this is to be replaced
+
 int set_nonblocking(int);
 
 int set_tcp_no_delay(int);
