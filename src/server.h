@@ -13,4 +13,20 @@
 
 int start_server(const char *,const char *);
 
+struct sol_info {
+    int nclients;
+
+    int nconnections;
+
+    long long start_time;
+
+    long long bytes_recv;
+
+    long long bytes_sent;
+
+    long long messages_sent;
+
+    long long messages_recv;
+};
+
 #endif

@@ -1,6 +1,8 @@
 #include "network.h"
 #include "pack.h"
 #include "util.h"
+#include <cstdint>
+#include <cstdio>
 #include <ctime>
 #define _POSIX_C_SOURCE 200809L
 #include <cstddef>
@@ -310,4 +312,83 @@ int start_server(const char *addr,const char *port){
     return 0;
 }
 
+static void publish_message(
+        unsigned short pkt_id,
+        unsigned short topiclen,
+        const char *topic,
+        unsigned short payloadlen,
+        unsigned char *payload
+        ){
+    struct topic *t = sol_topic_get(&sol,topic);
 
+    if(!t) return;
+
+    union mqtt_packet pkt;
+    struct mqtt_publish *p = mqtt_packet_publish(PUBLISH_BYTE, pkt_id, topiclen, (unsigned char *) topic, payloadlen, payload);
+
+    pkt.publish = *p;
+    size_t len;
+
+    unsigned char *packed;
+
+    struct list_node *cur = t->subscribers->head;
+    size_t sent  = 0L;
+
+    for(; cur;cur = cur->next){
+        sol_debug("Sending PUBLISH (d%i, q%u, r%i,m%u,%s,... (%i bytes))",
+                pkt.publish.header.bits.dup,
+                pkt.publish.header.bits.qos,
+                pkt.publish.header.bits.retain,
+                pkt.publish.pkt_id,
+                pkt.publish.topic,
+                pkt.publish.payloadlen
+                );
+        len = MQTT_HEADER_LEN + sizeof(uint16_t) + pkt.publish.topiclen + pkt.publish.payloadlen;
+        struct subscribers *sub = cur->data;
+        struct sol_client *sc = sub->client;
+
+        pkt.publish.header.bits.qos = sub->qos;
+        if(pkt.publish.header.bits.qos > AT_MOST_ONCE) len += sizeof(uint16_t);
+        int remaininglen_offset = 0;
+        if((len-1) > 0x4000) remaininglen_offset = 3;
+        else if((len-1) > 0x4000) remaininglen_offset = 2;
+        else if((len-1) > 0x80) remaininglen_offset = 1;
+
+        len += remaininglen_offset;
+
+        packed = pack_mqtt_packet(&pkt, PUBLISH);
+        if((sent = send_bytes(sc->fd, packed, len)) < 0){
+            sol_error("Error publishing to %s: %s",sc->client_id,strerror(errono));
+        }
+
+
+        info.bytes_sent += sent;
+        info.messages_sent++;
+        free(packed);
+    }
+    free(p);
+}
+
+static void publish_stats(struct evloop *loop,void *args){
+    char cclients[number_len(info.clients) + 1];
+    sprintf(clients, "%d",info.nclients);
+    char bsent[number_len(info.bytes_sent)+1];
+    sprintf(bsent, "%lld", info.bytes_sent);
+    char msent[number_len(info.messages_sent)+1];
+    sprintf(msent, "%lld", info.messages_sent);
+    char mrecv[number_len(info.messages_recv) +1];
+    sprintf(mrecv, "%lld", info.messages_recv);
+    long long uptime = time(NULL) - info.start_time;
+    char utime[number_len(uptime) + 1]
+        sprintf(utime, "%lld",uptime);
+    double sol_uptime = (double) (time(NULL)-info.start_time) / SOL_SECONDS;
+
+    char sutime[16];
+    sprintf(sutime,"%.4f",sol_uptime);
+    publish_message(0, strlen(sys_topic[5]), sys_topic[5], strlen(utime), (unsigned char *) &utime);
+    publish_message(0, strlen(sys_topic[6]), sys_topic[6], strlen(sutime), (unsigned char *) &sutime);
+    publish_message(0, strlen(sys_topic[7]), sys_topic[7], strlen(cclients), (unsigned char *) &cclients);
+    publish_message(0, strlen(sys_topic[9]), sys_topic[9], strlen(bsent), (unsigned char *) &bsent);
+    publish_message(0, strlen(sys_topic[11]), sys_topic[11], strlen(msent), (unsigned char *) &msent);
+    publish_message(0, strlen(sys_topic[12]), sys_topic[12], strlen(mrecv), (unsigned char *) &mrecv);
+}
